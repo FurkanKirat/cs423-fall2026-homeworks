@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # CS 423 HW1 — capture a short MinorCPU pipeline trace (Task 3).
-# Run INSIDE the container from the hw1/ directory, AFTER finishing Task 3:
-#   bash scripts/trace_pipeline.sh workloads/bin/loaduse dep
+# Run INSIDE the container from the hw1/ directory, after Task 3.1
+# (it needs your configs/pipeline.py). Any provided workload works, e.g.:
+#   bash scripts/trace_pipeline.sh workloads/bin/memstream
+# The loaduse kernels are your Task 4 code: trace them only after Task 4.
+# Add the exact command you used to reproduce.sh.
 #
 # Captures a 300-cycle MinorTrace window into results/trace/minortrace.txt.
 # By default the window starts 2,000,000 cycles into the run: well past the
