@@ -1,0 +1,371 @@
+diff --git a/src/cpu/pred/HW2Custom.py b/src/cpu/pred/HW2Custom.py
+new file mode 100644
+index 0000000..de661d3
+--- /dev/null
++++ b/src/cpu/pred/HW2Custom.py
+@@ -0,0 +1,14 @@
++# CS 423 HW2 — Bonus Task 5 (route B) skeleton: your own direction predictor.
++# Add parameters here; they appear as members of `params` in the C++
++# constructor (hw2_custom_bp.cc) after a rebuild.
++from m5.objects.BranchPredictor import ConditionalPredictor
++from m5.params import *
++
++
++class HW2CustomBP(ConditionalPredictor):
++    type = "HW2CustomBP"
++    cxx_class = "gem5::branch_prediction::HW2CustomBP"
++    cxx_header = "cpu/pred/hw2_custom_bp.hh"
++
++    tableSize = Param.Unsigned(4096, "Number of 2-bit counters (power of 2)")
++    historyBits = Param.Unsigned(12, "Global history length in bits (<= 32)")
+diff --git a/src/cpu/pred/SConscript b/src/cpu/pred/SConscript
+index 1f49830..5c296fa 100644
+--- a/src/cpu/pred/SConscript
++++ b/src/cpu/pred/SConscript
+@@ -62,6 +62,10 @@ SimObject('BranchPredictor.py',
+     'MultiperspectivePerceptronTAGE8KB', 'GshareBP'],
+     enums=['BranchType', 'TargetProvider'])
+ 
++# CS 423 HW2 (Bonus Task 5, route B): your own direction predictor
++SimObject('HW2Custom.py', sim_objects=['HW2CustomBP'])
++Source('hw2_custom_bp.cc')
++
+ Source('bpred_unit.cc')
+ Source('2bit_local.cc')
+ Source('simple_indirect.cc')
+diff --git a/src/cpu/pred/hw2_custom_bp.cc b/src/cpu/pred/hw2_custom_bp.cc
+new file mode 100644
+index 0000000..c31c650
+--- /dev/null
++++ b/src/cpu/pred/hw2_custom_bp.cc
+@@ -0,0 +1,110 @@
++/*
++ * CS 423 HW2 — Bonus Task 5 (route B) skeleton: your own direction
++ * predictor (see hw2_custom_bp.hh for the call protocol).
++ */
++#include "cpu/pred/hw2_custom_bp.hh"
++
++#include "base/intmath.hh"
++#include "base/logging.hh"
++
++namespace gem5
++{
++
++namespace branch_prediction
++{
++
++HW2CustomBP::HW2CustomBP(const HW2CustomBPParams &params)
++    : ConditionalPredictor(params),
++      tableSize(params.tableSize),
++      historyBits(params.historyBits),
++      historyMask(mask(params.historyBits)),
++      counters(params.tableSize, SatCounter8(2)),
++      ghr(params.numThreads, 0)
++{
++    fatal_if(!isPowerOf2(tableSize), "HW2CustomBP: tableSize must be a "
++             "power of 2");
++    fatal_if(historyBits > 32, "HW2CustomBP: historyBits must be <= 32");
++}
++
++unsigned
++HW2CustomBP::indexOf(Addr pc, uint64_t hist) const
++{
++    return ((pc >> instShiftAmt) ^ hist) & (tableSize - 1);
++}
++
++void
++HW2CustomBP::shiftIn(ThreadID tid, bool taken)
++{
++    ghr[tid] = ((ghr[tid] << 1) | (taken ? 1 : 0)) & historyMask;
++}
++
++bool
++HW2CustomBP::lookup(ThreadID tid, Addr pc, void * &bp_history)
++{
++    History *h = new History;
++    h->ghr = ghr[tid];
++    h->index = indexOf(pc, ghr[tid]);
++    h->pred = counters[h->index] >= 2;      // upper half: predict taken
++    bp_history = h;
++    return h->pred;
++}
++
++void
++HW2CustomBP::branchPlaceholder(ThreadID tid, Addr pc, bool uncond,
++                               void * &bp_history)
++{
++    // Called for a branch the BTB did not know; record the history only.
++    History *h = new History;
++    h->ghr = ghr[tid];
++    h->index = indexOf(pc, ghr[tid]);
++    h->pred = true;
++    bp_history = h;
++}
++
++void
++HW2CustomBP::updateHistories(ThreadID tid, Addr pc, bool uncond, bool taken,
++                             Addr target, const StaticInstPtr &inst,
++                             void * &bp_history)
++{
++    if (uncond) {                           // no lookup() happened
++        History *h = new History;
++        h->ghr = ghr[tid];
++        h->index = indexOf(pc, ghr[tid]);
++        h->pred = true;
++        bp_history = h;
++    }
++    shiftIn(tid, taken);                    // speculative history update
++}
++
++void
++HW2CustomBP::squash(ThreadID tid, void * &bp_history)
++{
++    History *h = static_cast<History *>(bp_history);
++    ghr[tid] = h->ghr;                      // undo the speculative update
++    delete h;
++    bp_history = nullptr;
++}
++
++void
++HW2CustomBP::update(ThreadID tid, Addr pc, bool taken, void * &bp_history,
++                    bool squashed, const StaticInstPtr &inst, Addr target)
++{
++    History *h = static_cast<History *>(bp_history);
++    if (squashed) {
++        // This branch was mispredicted: rebuild the history with its real
++        // outcome. Tables are trained only at commit (below).
++        ghr[tid] = h->ghr;
++        shiftIn(tid, taken);
++        return;
++    }
++    // Commit: train the counter that made the prediction.
++    if (taken)
++        counters[h->index]++;
++    else
++        counters[h->index]--;
++    delete h;
++    bp_history = nullptr;
++}
++
++} // namespace branch_prediction
++} // namespace gem5
+diff --git a/src/cpu/pred/hw2_custom_bp.hh b/src/cpu/pred/hw2_custom_bp.hh
+new file mode 100644
+index 0000000..4f6944f
+--- /dev/null
++++ b/src/cpu/pred/hw2_custom_bp.hh
+@@ -0,0 +1,73 @@
++/*
++ * CS 423 HW2 — Bonus Task 5 (route B) skeleton: your own direction
++ * predictor. As shipped it is a "gshare" predictor: one table of 2-bit
++ * counters indexed by (PC XOR global history). Storage as shipped:
++ * tableSize x 2 + historyBits bits. Change it into your design.
++ *
++ * Protocol (how the branch unit calls a direction predictor, in order):
++ *   lookup()           at fetch: predict; allocate a history record
++ *   updateHistories()  right after: update the SPECULATIVE histories with
++ *                      the predicted outcome (allocates the record for
++ *                      unconditional branches, which skip lookup())
++ *   squash()           the branch was on a wrong path: undo its history
++ *                      update and free the record
++ *   update(squashed=true)   the branch itself was mispredicted: repair the
++ *                      histories with the real outcome (keep the record)
++ *   update(squashed=false)  the branch commits: train the tables, free
++ *                      the record
++ */
++#ifndef __CPU_PRED_HW2_CUSTOM_BP_HH__
++#define __CPU_PRED_HW2_CUSTOM_BP_HH__
++
++#include <vector>
++
++#include "base/sat_counter.hh"
++#include "base/types.hh"
++#include "cpu/pred/conditional.hh"
++#include "params/HW2CustomBP.hh"
++
++namespace gem5
++{
++
++namespace branch_prediction
++{
++
++class HW2CustomBP : public ConditionalPredictor
++{
++  public:
++    HW2CustomBP(const HW2CustomBPParams &params);
++
++    bool lookup(ThreadID tid, Addr pc, void * &bp_history) override;
++    void branchPlaceholder(ThreadID tid, Addr pc, bool uncond,
++                           void * &bp_history) override;
++    void updateHistories(ThreadID tid, Addr pc, bool uncond, bool taken,
++                         Addr target, const StaticInstPtr &inst,
++                         void * &bp_history) override;
++    void squash(ThreadID tid, void * &bp_history) override;
++    void update(ThreadID tid, Addr pc, bool taken, void * &bp_history,
++                bool squashed, const StaticInstPtr &inst,
++                Addr target) override;
++
++  private:
++    /** What a branch remembers between prediction and commit. */
++    struct History
++    {
++        uint64_t ghr;      // global history BEFORE this branch
++        unsigned index;    // table index used for the prediction
++        bool pred;         // predicted direction
++    };
++
++    unsigned indexOf(Addr pc, uint64_t ghr) const;
++    void shiftIn(ThreadID tid, bool taken);
++
++    const unsigned tableSize;
++    const unsigned historyBits;
++    const uint64_t historyMask;
++    std::vector<SatCounter8> counters;
++    std::vector<uint64_t> ghr;   // one global history register per thread
++};
++
++} // namespace branch_prediction
++} // namespace gem5
++
++#endif // __CPU_PRED_HW2_CUSTOM_BP_HH__
+diff --git a/src/mem/cache/prefetch/HW2CustomPrefetcher.py b/src/mem/cache/prefetch/HW2CustomPrefetcher.py
+new file mode 100644
+index 0000000..2563d29
+--- /dev/null
++++ b/src/mem/cache/prefetch/HW2CustomPrefetcher.py
+@@ -0,0 +1,12 @@
++# CS 423 HW2 — Bonus Task 5 (route B) skeleton: your own L1D prefetcher.
++from m5.objects.Prefetcher import QueuedPrefetcher
++from m5.params import *
++
++
++class HW2CustomPrefetcher(QueuedPrefetcher):
++    type = "HW2CustomPrefetcher"
++    cxx_class = "gem5::prefetch::HW2Custom"
++    cxx_header = "mem/cache/prefetch/hw2_custom.hh"
++
++    degree = Param.Int(1, "Number of prefetches to generate per trigger")
++    table_entries = Param.Unsigned(16, "Entries of the PC-indexed table")
+diff --git a/src/mem/cache/prefetch/SConscript b/src/mem/cache/prefetch/SConscript
+index ad00d6c..f14855b 100644
+--- a/src/mem/cache/prefetch/SConscript
++++ b/src/mem/cache/prefetch/SConscript
+@@ -40,6 +40,10 @@ SimObject('Prefetcher.py', sim_objects=[
+     'FetchDirectedPrefetcher'
+     ])
+ 
++# CS 423 HW2 (Bonus Task 5, route B): your own L1D prefetcher
++SimObject('HW2CustomPrefetcher.py', sim_objects=['HW2CustomPrefetcher'])
++Source('hw2_custom.cc')
++
+ Source('access_map_pattern_matching.cc')
+ Source('base.cc')
+ Source('multi.cc')
+diff --git a/src/mem/cache/prefetch/hw2_custom.cc b/src/mem/cache/prefetch/hw2_custom.cc
+new file mode 100644
+index 0000000..7e57e94
+--- /dev/null
++++ b/src/mem/cache/prefetch/hw2_custom.cc
+@@ -0,0 +1,41 @@
++/*
++ * CS 423 HW2 — Bonus Task 5 (route B) skeleton: your own L1D prefetcher
++ * (see hw2_custom.hh).
++ */
++#include "mem/cache/prefetch/hw2_custom.hh"
++
++#include "params/HW2CustomPrefetcher.hh"
++
++namespace gem5
++{
++
++namespace prefetch
++{
++
++HW2Custom::HW2Custom(const HW2CustomPrefetcherParams &p)
++    : Queued(p), degree(p.degree), table(p.table_entries)
++{
++}
++
++void
++HW2Custom::calculatePrefetch(const PrefetchInfo &pfi,
++                             std::vector<AddrPriority> &addresses,
++                             const CacheAccessor &cache)
++{
++    const Addr blk = blockAddress(pfi.getAddr());
++
++    if (pfi.hasPC()) {
++        // Remember this load's last block (direct-mapped by PC).
++        Entry &e = table[(pfi.getPC() >> 2) % table.size()];
++        e.valid = true;
++        e.pc = pfi.getPC();
++        e.lastBlock = blk;
++    }
++
++    // As shipped: next-line prefetching of `degree` blocks.
++    for (int d = 1; d <= degree; d++)
++        addresses.push_back(AddrPriority(blk + d * blkSize, 0));
++}
++
++} // namespace prefetch
++} // namespace gem5
+diff --git a/src/mem/cache/prefetch/hw2_custom.hh b/src/mem/cache/prefetch/hw2_custom.hh
+new file mode 100644
+index 0000000..7045170
+--- /dev/null
++++ b/src/mem/cache/prefetch/hw2_custom.hh
+@@ -0,0 +1,55 @@
++/*
++ * CS 423 HW2 — Bonus Task 5 (route B) skeleton: your own L1D prefetcher.
++ * As shipped: a PC-indexed table (direct-mapped, table_entries entries)
++ * that remembers each load's last block address, and a next-line
++ * prefetch of `degree` blocks. Change it into your design.
++ *
++ * calculatePrefetch() is called on every access that notifies the
++ * prefetcher (demand misses and hits on prefetched blocks, as configured).
++ * Useful members of PrefetchInfo: getAddr(), hasPC(), getPC(),
++ * isCacheMiss(), isWrite(). Push candidates with
++ *   addresses.push_back(AddrPriority(addr, 0));
++ * (the queue drops candidates that cross a 4 KiB page or that are already
++ * cached or in flight).
++ */
++#ifndef __MEM_CACHE_PREFETCH_HW2_CUSTOM_HH__
++#define __MEM_CACHE_PREFETCH_HW2_CUSTOM_HH__
++
++#include <vector>
++
++#include "mem/cache/prefetch/queued.hh"
++#include "mem/packet.hh"
++
++namespace gem5
++{
++
++struct HW2CustomPrefetcherParams;
++
++namespace prefetch
++{
++
++class HW2Custom : public Queued
++{
++  protected:
++    struct Entry
++    {
++        bool valid = false;
++        Addr pc = 0;          // tag
++        Addr lastBlock = 0;   // last block address of this load
++    };
++
++    const int degree;
++    std::vector<Entry> table;
++
++  public:
++    HW2Custom(const HW2CustomPrefetcherParams &p);
++
++    void calculatePrefetch(const PrefetchInfo &pfi,
++                           std::vector<AddrPriority> &addresses,
++                           const CacheAccessor &cache) override;
++};
++
++} // namespace prefetch
++} // namespace gem5
++
++#endif // __MEM_CACHE_PREFETCH_HW2_CUSTOM_HH__
