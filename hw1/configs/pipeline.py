@@ -96,9 +96,25 @@ system.membus = SystemXBar()
 # 3) Create the CPU's interrupt controller.
 #
 # Delete the `raise` when you are done.
-raise NotImplementedError(
-    "Task 3: instantiate RiscvMinorCPU and connect its caches here"
-)
+
+# 1) Instantiate the in-order pipelined CPU model as `system.cpu`
+system.cpu = RiscvMinorCPU()
+
+# 2) Give the CPU an L1ICache and an L1DCache and connect
+#    system.cpu.icache_port / system.cpu.dcache_port to them, then connect
+#    the caches' mem_side to the memory bus
+system.cpu.icache = L1ICache()
+system.cpu.dcache = L1DCache()
+
+system.cpu.icache_port = system.cpu.icache.cpu_side
+system.cpu.dcache_port = system.cpu.dcache.cpu_side
+
+system.cpu.icache.mem_side = system.membus.cpu_side_ports
+system.cpu.dcache.mem_side = system.membus.cpu_side_ports
+
+# 3) Create the CPU's interrupt controller
+system.cpu.createInterruptController()
+
 # ===========================================================================
 # ==== end TODO(student) ====================================================
 # ===========================================================================

@@ -49,10 +49,25 @@ static uint64_t kernel_dependent(void) {
     uint64_t acc = 0;
     uint64_t *p = (uint64_t *)buf[0];
     for (uint64_t i = 0; i < ITERS; i++) {
-        /* TODO(student): extend to 2 x { 4 chained ld ; 4 add }          */
         __asm__ volatile(
             "ld   %[p], 0(%[p])   \n\t"   /* p = *p  (chase one hop)      */
+            "ld   %[p], 0(%[p])   \n\t"
+            "ld   %[p], 0(%[p])   \n\t"
+            "ld   %[p], 0(%[p])   \n\t"
             "add  %[a], %[a], %[p]\n\t"
+            "add  %[a], %[a], %[p]\n\t"
+            "add  %[a], %[a], %[p]\n\t"
+            "add  %[a], %[a], %[p]\n\t"
+
+            "ld   %[p], 0(%[p])   \n\t"   /* p = *p  (chase one hop)      */
+            "ld   %[p], 0(%[p])   \n\t"
+            "ld   %[p], 0(%[p])   \n\t"
+            "ld   %[p], 0(%[p])   \n\t"
+            "add  %[a], %[a], %[p]\n\t"
+            "add  %[a], %[a], %[p]\n\t"
+            "add  %[a], %[a], %[p]\n\t"
+            "add  %[a], %[a], %[p]\n\t"
+
             : [p] "+r"(p), [a] "+r"(acc)
             :
             : "memory");
@@ -66,14 +81,29 @@ static uint64_t kernel_dependent(void) {
 /* them). Same 8 loads + 8 adds as kernel_dependent, no load->load chain. */
 /* --------------------------------------------------------------------- */
 static uint64_t kernel_independent(void) {
-    uint64_t acc = 0, t0;
+    uint64_t acc = 0, t0, t1, t2, t3;
     const uint64_t *q = buf;
     for (uint64_t i = 0; i < ITERS; i++) {
-        /* TODO(student): extend to 2 x { 4 independent ld ; 4 add }      */
         __asm__ volatile(
-            "ld   %[t0], 0(%[q])   \n\t"
-            "add  %[a], %[a], %[t0]\n\t"
-            : [a] "+r"(acc), [t0] "=&r"(t0)
+            "ld   %[t0], 0(%[q])    \n\t"
+            "ld   %[t1], 8(%[q])    \n\t"
+            "ld   %[t2], 16(%[q])   \n\t"
+            "ld   %[t3], 24(%[q])   \n\t"
+            "add  %[a], %[a], %[t0] \n\t"
+            "add  %[a], %[a], %[t1] \n\t"
+            "add  %[a], %[a], %[t2] \n\t"
+            "add  %[a], %[a], %[t3] \n\t"
+
+            "ld   %[t0], 32(%[q])   \n\t"
+            "ld   %[t1], 40(%[q])   \n\t"
+            "ld   %[t2], 48(%[q])   \n\t"
+            "ld   %[t3], 56(%[q])   \n\t"
+            "add  %[a], %[a], %[t0] \n\t"
+            "add  %[a], %[a], %[t1] \n\t"
+            "add  %[a], %[a], %[t2] \n\t"
+            "add  %[a], %[a], %[t3] \n\t"
+            : [a] "+r"(acc), 
+            [t0] "=&r"(t0), [t1] "=&r"(t1), [t2] "=&r"(t2), [t3] "=&r"(t3)
             : [q] "r"(q)
             : "memory");
     }

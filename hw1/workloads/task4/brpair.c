@@ -37,13 +37,16 @@ static void fill(void) {
     }
 }
 
-/* TODO(student): branch on cond[i]; keep BOTH loop bodies identical. */
 static uint64_t run_loop(const uint8_t *cond) {
     uint64_t sum = 0;
     for (uint64_t i = 0; i < N; i++) {
-        /* TODO(student): e.g. if (cond[i]) sum += <something cheap>;
-         *                     else         sum ^= <something cheap>;   */
-        sum += cond[i];                  /* placeholder — no branch!    */
+       
+        if (cond[i]){
+            sum += 1;
+        }
+        else{
+            sum ^= 1;
+        }
     }
     return sum;
 }
